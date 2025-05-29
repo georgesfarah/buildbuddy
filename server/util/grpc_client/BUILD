@@ -11,6 +11,7 @@ go_library(
         "//server/util/canary",
         "//server/util/flag",
         "//server/util/log",
+        "//server/util/rpcz",
         "//server/util/status",
         "@io_opentelemetry_go_contrib_instrumentation_google_golang_org_grpc_otelgrpc//:otelgrpc",
         "@io_opentelemetry_go_otel_metric//noop",

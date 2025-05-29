@@ -13,6 +13,7 @@ go_library(
         "//server/util/flagz",
         "//server/util/grpc_server",
         "//server/util/log",
+        "//server/util/rpcz",
         "//server/util/status",
         "//server/util/statusz",
         "@com_github_prometheus_client_golang//prometheus/promhttp",

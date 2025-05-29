@@ -17,6 +17,7 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/server/util/bazel_request"
 	"github.com/buildbuddy-io/buildbuddy/server/util/grpc_forward"
 	"github.com/buildbuddy-io/buildbuddy/server/util/log"
+	"github.com/buildbuddy-io/buildbuddy/server/util/rpcz"
 	"github.com/buildbuddy-io/buildbuddy/server/util/status"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -245,6 +246,7 @@ var Metrics = sync.OnceValue(func() *grpc_prometheus.ServerMetrics {
 func CommonGRPCServerOptionsWithConfig(env environment.Env, config GRPCServerConfig) []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.StatsHandler(otelgrpc.NewServerHandler(otelgrpc.WithMeterProvider(noop.NewMeterProvider()))),
+		grpc.StatsHandler(rpcz.DefaultHandler.Server()),
 		grpc.ChainUnaryInterceptor(propagateRequestMetadataIDsToSpanUnaryServerInterceptor()),
 		grpc.ChainStreamInterceptor(propagateRequestMetadataIDsToSpanStreamServerInterceptor()),
 		interceptors.GetUnaryInterceptor(env, config.ExtraChainedUnaryInterceptors...),

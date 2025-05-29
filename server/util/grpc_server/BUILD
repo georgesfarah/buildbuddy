@@ -13,6 +13,7 @@ go_library(
         "//server/util/bazel_request",
         "//server/util/grpc_forward",
         "//server/util/log",
+        "//server/util/rpcz",
         "//server/util/status",
         "@com_github_grpc_ecosystem_go_grpc_middleware_providers_prometheus//:prometheus",
         "@com_github_prometheus_client_golang//prometheus",

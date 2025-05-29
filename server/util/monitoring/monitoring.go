@@ -14,6 +14,7 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/server/util/flagz"
 	"github.com/buildbuddy-io/buildbuddy/server/util/grpc_server"
 	"github.com/buildbuddy-io/buildbuddy/server/util/log"
+	"github.com/buildbuddy-io/buildbuddy/server/util/rpcz"
 	"github.com/buildbuddy-io/buildbuddy/server/util/status"
 	"github.com/buildbuddy-io/buildbuddy/server/util/statusz"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -53,6 +54,7 @@ func RegisterMonitoringHandlers(env environment.Env, mux *http.ServeMux) {
 	handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
 	handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
 	handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	rpcz.DefaultHandler.Serve(handle)
 
 	// Statusz page
 	handle(statusz.StatuszPath, statusz.Server())
