@@ -753,7 +753,7 @@ func (c *Proxy) RemoteWriter(ctx context.Context, peer, handoffPeer string, r *r
 	// the stream.
 	runtime.AddCleanup(wc, func(stream dcpb.DistributedCache_WriteClient) {
 		// This is safe to do multiple times.
-		stream.CloseAndRecv()
+		// stream.CloseAndRecv()
 	}, stream)
 	return c.newBufferedStreamWriteCloser(wc), nil
 }
