@@ -68,7 +68,7 @@ func New(env environment.Env, rootDirectory, scratchDirectory string) (*codesear
 	if err := disk.EnsureDirectoryExists(scratchDirectory); err != nil {
 		return nil, err
 	}
-	db, err := pebble.Open(rootDirectory, &pebble.Options{})
+	db, err := index.OpenPebbleDB(rootDirectory)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +327,7 @@ func (css *codesearchServer) Index(ctx context.Context, req *inpb.IndexRequest) 
 		unlockFn := css.repoLocks.Lock(lockKey)
 		defer unlockFn()
 
-		log.Infof("Starting indexing %s@%s", repoURL, commitSHA)
+		log.Infof("Starting indexing %q@%s", repoURL, commitSHA)
 
 		var err error
 		switch req.GetReplacementStrategy() {
@@ -369,7 +369,10 @@ func (css *codesearchServer) RepoStatus(ctx context.Context, req *inpb.RepoStatu
 
 	rev, err := github.GetLastIndexedCommitSha(r, repoURL)
 	if err != nil {
-		return nil, err
+		// If there's no status, return an empty commit SHA, but don't error.
+		if !status.IsNotFoundError(err) {
+			return nil, err
+		}
 	}
 
 	return &inpb.RepoStatusResponse{
