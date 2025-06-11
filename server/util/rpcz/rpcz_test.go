@@ -58,7 +58,7 @@ func BenchmarkStatsHandlerOverhead(b *testing.B) {
 					require.NoError(b, err)
 					var serverOpts []grpc.ServerOption
 					if serverOption {
-						serverOpts = append(serverOpts, grpc.StatsHandler(handler.Server()))
+						serverOpts = append(serverOpts, grpc.StatsHandler(handler.ServerStatsHandler()))
 					}
 					grpcServer := grpc.NewServer(serverOpts...)
 					bspb.RegisterByteStreamServer(grpcServer, &testService{})
@@ -72,7 +72,7 @@ func BenchmarkStatsHandlerOverhead(b *testing.B) {
 					// Setup client
 					clientOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 					if clientOption {
-						clientOpts = append(clientOpts, grpc.WithStatsHandler(handler.Client()))
+						clientOpts = append(clientOpts, grpc.WithStatsHandler(handler.ClientStatsHandler()))
 					}
 					conn, err := grpc.NewClient(lis.Addr().String(), clientOpts...)
 					require.NoError(b, err)

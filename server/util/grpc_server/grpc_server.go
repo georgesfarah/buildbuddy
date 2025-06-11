@@ -246,7 +246,7 @@ var Metrics = sync.OnceValue(func() *grpc_prometheus.ServerMetrics {
 func CommonGRPCServerOptionsWithConfig(env environment.Env, config GRPCServerConfig) []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.StatsHandler(otelgrpc.NewServerHandler(otelgrpc.WithMeterProvider(noop.NewMeterProvider()))),
-		grpc.StatsHandler(rpcz.DefaultHandler.Server()),
+		grpc.StatsHandler(rpcz.DefaultHandler.ServerStatsHandler()),
 		grpc.ChainUnaryInterceptor(propagateRequestMetadataIDsToSpanUnaryServerInterceptor()),
 		grpc.ChainStreamInterceptor(propagateRequestMetadataIDsToSpanStreamServerInterceptor()),
 		interceptors.GetUnaryInterceptor(env, config.ExtraChainedUnaryInterceptors...),
