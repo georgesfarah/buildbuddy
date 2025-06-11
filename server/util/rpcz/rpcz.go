@@ -6,6 +6,8 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,8 +23,11 @@ type rpcStats struct {
 	ID        string
 	Method    string
 	PeerAddr  string
-	Deadline  *time.Time
+	Deadline  *time.Duration
 	BeginTime time.Time
+	Duration  time.Duration
+	Messages  []string
+	Parent    *rpcStats
 }
 
 // contextKey is a private type for storing values in context
@@ -30,18 +35,27 @@ type contextKey struct{}
 
 // statsHandler tracks in-flight RPCs and implements stats.Handler
 type statsHandler struct {
-	mu   sync.RWMutex
-	rpcs map[string]rpcStats
+	mu             sync.RWMutex
+	active         map[string]*rpcStats
+	completed      [10]*rpcStats
+	completedIdx   int
+	completedCount int
 }
 
+// Split active and completed RPCs
+// Keep the first N active, then sample after that
+// Keep all active, N completed, and N errored
+// Once an RPC is completed, it can't be modified any more
+// Allow adding messages
+// Keep track of parents for client RPCs
+
 func (h *statsHandler) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
-	rs := rpcStats{
-		ID:        uuid.New().String(),
-		Method:    info.FullMethodName,
-		BeginTime: time.Now(),
+	rs := &rpcStats{
+		ID:     uuid.New().String(),
+		Method: info.FullMethodName,
 	}
-	if dl, ok := ctx.Deadline(); ok {
-		rs.Deadline = &dl
+	if parent, ok := ctx.Value(contextKey{}).(*rpcStats); ok {
+		rs.Parent = parent
 	}
 	if p, ok := peer.FromContext(ctx); ok {
 		rs.PeerAddr = p.Addr.String()
@@ -51,18 +65,60 @@ func (h *statsHandler) TagRPC(ctx context.Context, info *stats.RPCTagInfo) conte
 
 func (h *statsHandler) HandleRPC(ctx context.Context, stat stats.RPCStats) {
 	val := ctx.Value(contextKey{})
-	rs, ok := val.(rpcStats)
+	rs, ok := val.(*rpcStats)
 	if !ok {
 		return
 	}
-	switch stat.(type) {
+	switch s := stat.(type) {
 	case *stats.Begin:
 		h.mu.Lock()
-		h.rpcs[rs.ID] = rs
+		rs.BeginTime = s.BeginTime
+		if dl, ok := ctx.Deadline(); ok {
+			dur := dl.Sub(s.BeginTime)
+			rs.Deadline = &dur
+		}
+		if rs.Parent != nil && rs.Duration == 0 {
+			rs.Parent.Messages = append(rs.Parent.Messages, fmt.Sprintf("Started client call %v at %v", rs.Method, rs.BeginTime.Sub(rs.Parent.BeginTime)))
+		}
+		h.active[rs.ID] = rs
+		h.mu.Unlock()
+	case *stats.InPayload:
+		h.mu.Lock()
+		rs.Messages = append(rs.Messages, fmt.Sprintf("Received %v bytes at %v", s.Length, s.RecvTime.Sub(rs.BeginTime)))
+		// rs.Messages = append(rs.Messages, fmt.Sprintf("Received %v", s.Payload))
+		h.mu.Unlock()
+	case *stats.InHeader:
+		h.mu.Lock()
+		rs.Messages = append(rs.Messages, fmt.Sprintf("Received header at %v", time.Since(rs.BeginTime)))
+		h.mu.Unlock()
+	case *stats.InTrailer:
+		h.mu.Lock()
+		rs.Messages = append(rs.Messages, fmt.Sprintf("Received trailer at %v", time.Since(rs.BeginTime)))
+		h.mu.Unlock()
+	case *stats.OutPayload:
+		h.mu.Lock()
+		rs.Messages = append(rs.Messages, fmt.Sprintf("Sent %v bytes at %v", s.Length, s.SentTime.Sub(rs.BeginTime)))
+		// rs.Messages = append(rs.Messages, fmt.Sprintf("Sent %v", s.Payload))
+		h.mu.Unlock()
+	case *stats.OutHeader:
+		h.mu.Lock()
+		rs.Messages = append(rs.Messages, fmt.Sprintf("Sent header at %v", time.Since(rs.BeginTime)))
+		h.mu.Unlock()
+	case *stats.OutTrailer:
+		h.mu.Lock()
+		rs.Messages = append(rs.Messages, fmt.Sprintf("Received trailer at %v", time.Since(rs.BeginTime)))
 		h.mu.Unlock()
 	case *stats.End:
 		h.mu.Lock()
-		delete(h.rpcs, rs.ID)
+		if rs.Parent != nil && rs.Duration == 0 {
+			rs.Parent.Messages = append(rs.Parent.Messages, fmt.Sprintf("Finished client call %v at %v", rs.Method, s.EndTime.Sub(rs.Parent.BeginTime)))
+		}
+		rs.Duration = s.EndTime.Sub(rs.BeginTime)
+		rs.Messages = append(rs.Messages, fmt.Sprintf("Received response %v at %v", s.Error, rs.Duration))
+		h.completed[h.completedIdx] = rs
+		h.completedIdx = (h.completedIdx + 1) % len(h.completed)
+		h.completedCount = min(h.completedCount+1, len(h.completed))
+		delete(h.active, rs.ID)
 		h.mu.Unlock()
 	}
 }
@@ -79,70 +135,76 @@ type Handler struct {
 // NewHandler sets up handlers for both directions
 func NewHandler() *Handler {
 	return &Handler{
-		server: &statsHandler{rpcs: make(map[string]rpcStats)},
-		client: &statsHandler{rpcs: make(map[string]rpcStats)},
+		server: &statsHandler{active: make(map[string]*rpcStats)},
+		client: &statsHandler{active: make(map[string]*rpcStats)},
 	}
 }
 
-func (h *Handler) Server() stats.Handler {
+func (h *Handler) ServerStatsHandler() stats.Handler {
 	return h.server
 }
 
-func (h *Handler) Client() stats.Handler {
+func (h *Handler) ClientStatsHandler() stats.Handler {
 	return h.client
 }
 
 func (z *Handler) Serve(handle func(pattern string, handler http.Handler)) {
-	funcMap := template.FuncMap{
-		"since": func(t time.Time) string {
-			return time.Since(t).String()
-		},
-	}
 	tmplIdx := template.Must(
-		template.New("index").Funcs(funcMap).Parse(indexHTML),
+		template.New("index").Parse(indexHTML),
 	)
 	tmplDet := template.Must(
-		template.New("detail").Funcs(funcMap).Parse(detailHTML),
+		template.New("detail").Parse(detailHTML),
 	)
 
 	handle("/rpcz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type entry struct {
 			Method, Direction string
-			Count             int
+			Active, Completed int
 		}
-		counts := make(map[string]map[string]int)
+		type activeAndCompleted struct{ active, completed int }
+		serverCounts := make(map[string]activeAndCompleted)
 
 		z.server.mu.RLock()
-		for _, s := range z.server.rpcs {
-			m := counts[s.Method]
-			if m == nil {
-				m = map[string]int{"incoming": 0}
-			}
-			m["incoming"]++
-			counts[s.Method] = m
+		for _, s := range z.server.active {
+			c := serverCounts[s.Method]
+			c.active++
+			serverCounts[s.Method] = c
+		}
+		for _, s := range z.server.completed[:z.server.completedCount] {
+			c := serverCounts[s.Method]
+			c.completed++
+			serverCounts[s.Method] = c
 		}
 		z.server.mu.RUnlock()
 
+		clientCounts := make(map[string]activeAndCompleted)
 		z.client.mu.RLock()
-		for _, s := range z.client.rpcs {
-			m := counts[s.Method]
-			if m == nil {
-				m = map[string]int{"outgoing": 0}
-			}
-			m["outgoing"]++
-			counts[s.Method] = m
+		for _, s := range z.client.active {
+			c := clientCounts[s.Method]
+			c.active++
+			clientCounts[s.Method] = c
+		}
+		for _, s := range z.client.completed[:z.client.completedCount] {
+			c := clientCounts[s.Method]
+			c.completed++
+			clientCounts[s.Method] = c
 		}
 		z.client.mu.RUnlock()
 
 		entries := []entry{}
-		for method, m := range counts {
-			if in := m["incoming"]; in > 0 {
-				entries = append(entries, entry{method, "incoming", in})
-			}
-			if out := m["outgoing"]; out > 0 {
-				entries = append(entries, entry{method, "outgoing", out})
-			}
+		for method, m := range serverCounts {
+			entries = append(entries, entry{method, "incoming", m.active, m.completed})
 		}
+		for method, m := range clientCounts {
+			entries = append(entries, entry{method, "outgoing", m.active, m.completed})
+		}
+
+		slices.SortFunc(entries, func(l, r entry) int {
+			if l.Direction != r.Direction {
+				return strings.Compare(l.Direction, r.Direction)
+			}
+			return strings.Compare(l.Method, r.Method)
+		})
 
 		if err := tmplIdx.Execute(w, entries); err != nil {
 			log.Printf("index template error: %v", err)
@@ -152,31 +214,41 @@ func (z *Handler) Serve(handle func(pattern string, handler http.Handler)) {
 	handle("/rpcz/method", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		dir := r.URL.Query().Get("dir")
-		if dir != "outgoing" {
-			dir = "incoming"
+		completed := len(r.URL.Query().Get("completed")) > 0
+
+		var entries []*rpcStats
+		stats := z.client
+		if dir == "incoming" {
+			stats = z.server
 		}
 
-		var entries []rpcStats
-		var mu *sync.RWMutex
-		var store map[string]rpcStats
-		if dir == "outgoing" {
-			mu, store = &z.client.mu, z.client.rpcs
+		stats.mu.RLock()
+		if completed {
+			for _, s := range stats.completed[:stats.completedCount] {
+				if s.Method == name {
+					entries = append(entries, s)
+				}
+			}
 		} else {
-			mu, store = &z.server.mu, z.server.rpcs
-		}
-
-		mu.RLock()
-		for _, s := range store {
-			if s.Method == name {
-				entries = append(entries, s)
+			now := time.Now()
+			for _, s := range stats.active {
+				if s.Method == name {
+					s.Duration = now.Sub(s.BeginTime)
+					entries = append(entries, s)
+				}
 			}
 		}
-		mu.RUnlock()
+		stats.mu.RUnlock()
+
+		slices.SortFunc(entries, func(l, r *rpcStats) int {
+			return l.BeginTime.Compare(r.BeginTime)
+		})
 
 		data := struct {
 			Method, Dir string
-			Entries     []rpcStats
-		}{name, dir, entries}
+			Completed   bool
+			Entries     []*rpcStats
+		}{name, dir, completed, entries}
 
 		fmt.Printf("VANJAAAAAAAAAAAAAAA - template data%+v\n", data)
 		if err := tmplDet.Execute(w, data); err != nil {
@@ -197,15 +269,17 @@ const indexHTML = `<!DOCTYPE html>
       <tr>
         <th>Method</th>
         <th>Direction</th>
-        <th>Count</th>
+        <th>Active</th>
+		<th>Completed</th>
       </tr>
-      {{- range . }}
+{{- range . }}
       <tr>
-        <td><a href="/rpcz/method?name={{ .Method }}&dir={{ .Direction }}">{{ .Method }}</a></td>
+        <td>{{ .Method }}</td>
         <td>{{ .Direction }}</td>
-        <td>{{ .Count }}</td>
+        <td><a href="/rpcz/method?name={{ .Method }}&dir={{ .Direction }}">{{ .Active }}</a></td>
+		<td><a href="/rpcz/method?name={{ .Method }}&dir={{ .Direction }}&completed=1">{{ .Completed }}</a></td>
       </tr>
-      {{- end }}
+{{- end }}
     </table>
   </body>
 </html>`
@@ -214,10 +288,10 @@ const detailHTML = `<!DOCTYPE html>
 <html>
   <head>
     <meta charset="UTF-8">
-    <title>RPC Details for {{ .Method }} ({{ .Dir }})</title>
+    <title>RPC Details for {{ .Method }} ({{ .Dir }}) ({{ if .Completed }}Completed{{ else }}Active{{ end }})</title>
   </head>
   <body>
-    <h1>{{ .Method }} [{{ .Dir }}]</h1>
+    <h1>{{ .Method }} [{{ .Dir }}] [{{ if .Completed }}Completed{{ else }}Active{{ end }}]</h1>
     <table border="1">
       <tr>
         <th>ID</th>
@@ -225,16 +299,23 @@ const detailHTML = `<!DOCTYPE html>
         <th>Started</th>
         <th>Duration</th>
         <th>Deadline</th>
+        <th>Messages</th>
       </tr>
-      {{- range .Entries }}
+{{- range .Entries }}
       <tr>
         <td>{{ .ID }}</td>
         <td>{{ .PeerAddr }}</td>
         <td>{{ .BeginTime }}</td>
-        <td>{{ since .BeginTime }}</td>
+        <td>{{ .Duration }}</td>
         <td>{{ if .Deadline }}{{ .Deadline }}{{ end }}</td>
+        <td>
+	{{- range .Messages }}
+		{{ . }}
+		 </br>
+	{{- end }}
+		</td>
       </tr>
-      {{- end }}
+{{- end }}
     </table>
   </body>
 </html>`
