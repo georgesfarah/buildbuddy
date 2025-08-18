@@ -37,14 +37,11 @@ import (
 )
 
 var (
-	keyTTL               = flag.Duration("crypter.key_ttl", 10*time.Minute, "The maximum amount of time a key can be cached without being re-verified before it is considered invalid.")
 	keyReencryptInterval = flag.Duration("crypter.key_reencrypt_interval", 6*time.Hour, "How frequently keys will be re-encrypted (to support key rotation).")
 	permittedClients     = flag.Slice("crypter.permitted_clients", []string{}, "Clients (identified by clientidentity) that are permitted to access encryption keys via RPC.")
 )
 
 const (
-	plainTextChunkSize = 1024 * 1024 // 1 MiB
-
 	// How often to check for keys that need to be refreshed.
 	keyRefreshScanFrequency = 10 * time.Second
 	// How long to wait after a failed refresh attempt before trying again.
@@ -128,12 +125,12 @@ func (c *keyCache) checkCacheEntry(ck cacheKey, ce *cacheEntry) {
 	}
 
 	// If the expiration is far into the future, don't do anything.
-	if ce.expiresAfter.Sub(c.clock.Now()) > *keyTTL/2 {
+	if ce.expiresAfter.Sub(c.clock.Now()) > crypter.GetKeyTTL()/2 {
 		return
 	}
 
 	// Don't try to extend the life of the key if it hasn't been used recently.
-	if c.clock.Now().Sub(ce.lastUse) > *keyTTL/2 {
+	if c.clock.Now().Sub(ce.lastUse) > crypter.GetKeyTTL()/2 {
 		return
 	}
 
@@ -155,7 +152,7 @@ func (c *keyCache) checkCacheEntry(ck cacheKey, ce *cacheEntry) {
 			ce.mu.Lock()
 			ce.derivedKey = loadedKey.Key
 			ce.keyMetadata = loadedKey.Metadata
-			ce.expiresAfter = c.clock.Now().Add(*keyTTL)
+			ce.expiresAfter = c.clock.Now().Add(crypter.GetKeyTTL())
 			ce.mu.Unlock()
 		} else {
 			log.Warningf("could not refresh key %q: %s", ck, err)
@@ -293,7 +290,7 @@ func (c *keyCache) refreshKeySingleAttempt(ctx context.Context, ck cacheKey) ([]
 		Version:         int64(ekv.Version),
 	}
 	c.cacheAdd(ck, &cacheEntry{
-		expiresAfter: c.clock.Now().Add(*keyTTL),
+		expiresAfter: c.clock.Now().Add(crypter.GetKeyTTL()),
 		keyMetadata:  md,
 		derivedKey:   key,
 	})
@@ -450,7 +447,7 @@ func (c *Crypter) NewEncryptor(ctx context.Context, digest *repb.Digest, w inter
 	if err != nil {
 		return nil, err
 	}
-	return c.newEncryptorWithChunkSize(ctx, digest, w, u.GetGroupID(), plainTextChunkSize)
+	return c.newEncryptorWithChunkSize(ctx, digest, w, u.GetGroupID(), crypter.PlainTextChunkSize)
 }
 
 func (c *Crypter) newDecryptorWithChunkSize(ctx context.Context, digest *repb.Digest, r io.ReadCloser, em *sgpb.EncryptionMetadata, groupID string, chunkSize int) (*crypter.Decryptor, error) {
@@ -466,7 +463,7 @@ func (c *Crypter) NewDecryptor(ctx context.Context, digest *repb.Digest, r io.Re
 	if err != nil {
 		return nil, err
 	}
-	return c.newDecryptorWithChunkSize(ctx, digest, r, em, u.GetGroupID(), plainTextChunkSize)
+	return c.newDecryptorWithChunkSize(ctx, digest, r, em, u.GetGroupID(), crypter.PlainTextChunkSize)
 }
 
 type encryptionKeyVersionWithGroupID struct {
