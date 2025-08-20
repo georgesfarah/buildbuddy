@@ -304,3 +304,17 @@ func TestYAMLIgnoreAndSecret(t *testing.T) {
 	assert.Equal(t, "default", *v1)
 	assert.Equal(t, "default2", *v2)
 }
+
+func TestMeta(t *testing.T) {
+	flagset := replaceFlagsForTesting(t)
+
+	var meta MetaTag
+	flagset.String("testflag", "test-default-value", "Test flag help")
+	Tag[string, flag.Value](flagset, "testflag", &meta)
+
+	require.False(t, meta.IsConfigured(), "flag should not yet be configured")
+
+	common.SetValueForFlagName(flagset, "testflag", "test-value", nil, true)
+
+	require.True(t, meta.IsConfigured(), "flag should now be configured")
+}
