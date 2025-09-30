@@ -2299,7 +2299,7 @@ func TestUserListOps(t *testing.T) {
 	require.True(t, status.IsPermissionDeniedError(err))
 }
 
-func TestLookupUserFromSubID(t *testing.T) {
+func TestGetUserUserBySubID(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t)
 	udb := env.GetUserDB()
@@ -2348,7 +2348,7 @@ func TestLookupUserFromSubID(t *testing.T) {
 		"expected RecordNotFound error; got: %v", err)
 }
 
-func TestLookupUserFromSubIDNoGroup(t *testing.T) {
+func TestGetUserBySubIDNoGroup(t *testing.T) {
 	flags.Set(t, "database.log_queries", true)
 
 	ctx := context.Background()
